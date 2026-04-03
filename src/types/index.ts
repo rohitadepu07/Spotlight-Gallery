@@ -20,3 +20,11 @@ export interface Event {
   qrCode: string;
   coverUrl: string;
 }
+
+export interface UserProfile {
+  name: string;
+  email: string;
+  phone?: string;
+  bio?: string;
+  role: "admin" | "participant";
+}

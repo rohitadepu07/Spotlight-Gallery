@@ -1,27 +1,31 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Camera, Upload, Settings, Image as ImageIcon, Users, QrCode,
+  Upload, Image as ImageIcon, Users, QrCode,
   RefreshCw, TrendingUp, Calendar, Zap,
   ArrowUpRight, Plus, Scan, User,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import { Event } from "@/types";
+import { Event, UserProfile } from "@/types";
 import ProfileView from "@/components/ProfileView";
 import { toast } from "sonner";
 
-interface AdminDashboardProps { onLogout: () => void; }
+interface AdminDashboardProps {
+  onLogout: () => void;
+  userProfile: UserProfile | null;
+}
 type UploadState = "idle" | "uploading" | "scanning" | "done";
 
-export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
+export default function AdminDashboard({ onLogout, userProfile }: AdminDashboardProps) {
   const [activeView, setActiveView] = useState<"home" | "upload" | "settings" | "profile">("home");
   const [uploadState, setUploadState] = useState<UploadState>("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isDragOver, setIsDragOver] = useState(false);
   const [events, setEvents] = useState<Event[]>([]);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
   const [uploadedCount, setUploadedCount] = useState(0);
+  const [facesDetected, setFacesDetected] = useState(0);
+  const [selectedUploadEventId, setSelectedUploadEventId] = useState("");
 
   const [newEvent, setNewEvent] = useState({
     name: "",
@@ -37,12 +41,14 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
 
   const fetchEvents = async () => {
     try {
-      const data = await api.getEvents();
+      const data = await api.getEvents({ includePrivate: true });
       setEvents(data);
+      setSelectedUploadEventId((prev) => {
+        if (prev && data.some((event) => event.id === prev)) return prev;
+        return data[0]?.id ?? "";
+      });
     } catch (error) {
       toast.error("Failed to load events");
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -50,33 +56,93 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
     e.preventDefault();
     try {
       const qrCode = `EVT-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-      await api.createEvent({ ...newEvent, qrCode });
+      const created = await api.createEvent({ ...newEvent, qrCode });
       toast.success("Event created successfully!");
       setIsCreateModalOpen(false);
-      fetchEvents();
+      await fetchEvents();
+      setSelectedUploadEventId(created.id);
     } catch (error) {
       toast.error("Failed to create event");
     }
   };
 
-  const handleDrop = useCallback(async (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    startUpload(e.dataTransfer.files.length || 12);
-  }, []);
+  const uploadFiles = async (inputFiles: File[] | FileList) => {
+    const files = Array.isArray(inputFiles) ? inputFiles : Array.from(inputFiles);
+    if (files.length === 0) return;
+    if (!selectedUploadEventId) {
+      toast.error("Create or select an event before uploading.");
+      return;
+    }
 
-  const startUpload = async (count: number) => {
-    setUploadedCount(count);
+    setUploadedCount(files.length);
+    setFacesDetected(0);
     setUploadState("uploading");
     setUploadProgress(0);
-    for (let i = 0; i <= 100; i += 5) { await new Promise((r) => setTimeout(r, 70)); setUploadProgress(i); }
-    setUploadState("scanning");
-    for (let i = 0; i <= 100; i += 2) { await new Promise((r) => setTimeout(r, 55)); setUploadProgress(i); }
-    setUploadState("done");
+
+    const uploadTicker = window.setInterval(() => {
+      setUploadProgress((prev) => Math.min(prev + 4, 72));
+    }, 140);
+
+    try {
+      const summary = await api.uploadEventPhotos(selectedUploadEventId, files);
+      window.clearInterval(uploadTicker);
+      setUploadState("scanning");
+      setUploadProgress(78);
+
+      for (let i = 78; i <= 96; i += 3) {
+        // Small UX step while backend result is being shown as finalized scan.
+        await new Promise((resolve) => setTimeout(resolve, 45));
+        setUploadProgress(i);
+      }
+
+      setUploadedCount(summary.uploaded);
+      setFacesDetected(summary.facesDetected);
+      setUploadProgress(100);
+      setUploadState("done");
+      await fetchEvents();
+      toast.success(`Uploaded ${summary.uploaded} photos.`);
+    } catch (error) {
+      window.clearInterval(uploadTicker);
+      setUploadState("idle");
+      setUploadProgress(0);
+      toast.error("Upload failed. Please retry.");
+    }
   };
 
-  const toggleVisibility = (id: string) =>
-    setEvents((prev) => prev.map((e) => e.id === id ? { ...e, isPublic: !e.isPublic } : e));
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    await uploadFiles(e.dataTransfer.files);
+  };
+
+  const toggleVisibility = async (id: string) => {
+    try {
+      const updated = await api.toggleEventVisibility(id);
+      setEvents((prev) => prev.map((e) => (e.id === id ? updated : e)));
+      toast.success(`Event is now ${updated.isPublic ? "public" : "private"}`);
+    } catch (error) {
+      toast.error("Failed to update event visibility");
+    }
+  };
+
+  const handleCopyEventCode = async (event: Event) => {
+    try {
+      await navigator.clipboard.writeText(event.qrCode);
+      toast.success("Event code copied!");
+    } catch (error) {
+      toast.error("Could not copy event code.");
+    }
+  };
+
+  const handleShareJoinLink = async (event: Event) => {
+    try {
+      const link = await api.getEventJoinLink(event.id);
+      await navigator.clipboard.writeText(link.joinUrl);
+      toast.success("Join link copied!");
+    } catch (error) {
+      toast.error("Failed to generate join link.");
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -91,7 +157,7 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
             transition={{ type: "spring", stiffness: 300, damping: 32 }}
             className="fixed inset-0 z-50 overflow-auto bg-background"
           >
-            <ProfileView onBack={() => setActiveView("home")} onLogout={onLogout} role="admin" />
+            <ProfileView onBack={() => setActiveView("home")} onLogout={onLogout} role="admin" initialProfile={userProfile} />
           </motion.div>
         )}
       </AnimatePresence>
@@ -227,7 +293,7 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
                           <div className="text-sm font-black text-black uppercase tracking-tight truncate">{event.name}</div>
                           <div className="flex items-center gap-2 mt-1">
                             <div className="text-[10px] font-bold text-primary bg-primary/10 px-2 py-0.5 border border-primary/20 uppercase tracking-widest">{event.id.split('-')[0].toUpperCase()}</div>
-                            <button onClick={() => { navigator.clipboard.writeText(event.id); toast.success("Code copied!"); }}
+                            <button onClick={() => handleCopyEventCode(event)}
                               className="text-[10px] font-bold text-gray-400 hover:text-black uppercase underline decoration-2 underline-offset-2">Copy Code</button>
                           </div>
                         </div>
@@ -315,7 +381,11 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
                 <div className="md:col-span-2 border-[3px] border-black bg-white shadow-[10px_10px_0px_0px_#000] overflow-hidden rounded-[24px]">
                   <div className="p-6 border-b-[3px] border-black bg-gray-50 flex items-center justify-between">
                     <label className="text-[10px] font-black text-black uppercase tracking-widest">Target Event</label>
-                    <select className="bg-white border-2 border-black px-4 py-2 text-[10px] font-black uppercase tracking-widest focus:outline-none shadow-[3px_3px_0px_0px_#000] rounded-lg">
+                    <select
+                      value={selectedUploadEventId}
+                      onChange={(e) => setSelectedUploadEventId(e.target.value)}
+                      className="bg-white border-2 border-black px-4 py-2 text-[10px] font-black uppercase tracking-widest focus:outline-none shadow-[3px_3px_0px_0px_#000] rounded-lg"
+                    >
                       {events.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
                     </select>
                   </div>
@@ -335,7 +405,7 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
                         <label className="flex-1 bg-primary text-white text-xs font-black uppercase tracking-widest py-4 px-8 border-[3px] border-black shadow-[6px_6px_0px_0px_#000] hover:translate-x-[-2px] hover:translate-y-[-2px] transition-all rounded-[20px] cursor-pointer">
                           Browse Files
                           <input type="file" multiple accept="image/*" className="hidden"
-                            onChange={(e) => e.target.files?.length && startUpload(e.target.files.length)} />
+                            onChange={(e) => e.target.files?.length && uploadFiles(e.target.files)} />
                         </label>
                         <p className="text-[10px] font-bold text-gray-400 uppercase mt-8 tracking-tighter">JPG, PNG, HEIC · Up to 500 photos · AI face matching enabled</p>
                       </motion.div>
@@ -371,8 +441,8 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
                         </div>
                         <h3 className="text-xl font-black text-black uppercase mb-1">Upload Complete!</h3>
                         <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2">{uploadedCount} photos processed</p>
-                        <div className="text-[10px] font-black text-green-600 uppercase mb-8 tracking-[0.2em]">{Math.round(uploadedCount * 2.3)} faces detected</div>
-                        <button onClick={() => { setUploadState("idle"); setUploadProgress(0); }}
+                        <div className="text-[10px] font-black text-green-600 uppercase mb-8 tracking-[0.2em]">{facesDetected} faces detected</div>
+                        <button onClick={() => { setUploadState("idle"); setUploadProgress(0); setFacesDetected(0); }}
                           className="flex items-center gap-3 mx-auto px-8 py-4 border-[3px] border-black bg-white hover:bg-gray-50 text-[10px] font-black uppercase tracking-widest shadow-[6px_6px_0px_0px_#000] rotate-1 transition-all rounded-[20px]">
                           <RefreshCw size={16} />Upload More
                         </button>
@@ -443,8 +513,18 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
                         <div className="flex-1 min-w-0">
                           <div className="text-[10px] font-black text-primary truncate uppercase tracking-tighter">{event.qrCode}</div>
                           <div className="flex gap-2 mt-3">
-                            <button className="text-[10px] font-black uppercase bg-primary text-white px-3 py-1.5 border-2 border-black shadow-[2px_2px_0px_0px_#000] hover:translate-x-[-1px] hover:translate-y-[-1px] transition-all">QR</button>
-                            <button className="text-[10px] font-black uppercase bg-white text-black px-3 py-1.5 border-2 border-black shadow-[2px_2px_0px_0px_#000] hover:translate-x-[-1px] hover:translate-y-[-1px] transition-all">Copy</button>
+                            <button
+                              onClick={() => handleShareJoinLink(event)}
+                              className="text-[10px] font-black uppercase bg-primary text-white px-3 py-1.5 border-2 border-black shadow-[2px_2px_0px_0px_#000] hover:translate-x-[-1px] hover:translate-y-[-1px] transition-all"
+                            >
+                              QR
+                            </button>
+                            <button
+                              onClick={() => handleCopyEventCode(event)}
+                              className="text-[10px] font-black uppercase bg-white text-black px-3 py-1.5 border-2 border-black shadow-[2px_2px_0px_0px_#000] hover:translate-x-[-1px] hover:translate-y-[-1px] transition-all"
+                            >
+                              Copy
+                            </button>
                           </div>
                         </div>
                       </div>

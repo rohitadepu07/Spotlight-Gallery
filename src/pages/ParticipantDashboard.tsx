@@ -1,23 +1,24 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  ArrowLeft, Camera, Download, Share2, X, Zap, Plus,
-  CheckCircle2, ScanFace, ImageIcon, Calendar, User, RefreshCw
+  ArrowLeft, Download, Share2, X, Zap, Plus,
+  CheckCircle2, ScanFace, ImageIcon, User, RefreshCw
 } from "lucide-react";
 import ProfileView from "@/components/ProfileView";
-import { type Photo, type Event } from "@/types";
+import { type Photo, type Event, type UserProfile } from "@/types";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
-import { searchFaceInGallery } from "@/lib/mockFaceRecognition";
 
 interface ParticipantDashboardProps { 
   onLogout: () => void; 
   eventId: string | null;
+  photoId: string | null;
+  userProfile: UserProfile | null;
 }
 type AppView = "events" | "gallery" | "profile";
 type SearchState = "idle" | "searching" | "done";
 
-export default function ParticipantDashboard({ onLogout, eventId }: ParticipantDashboardProps) {
+export default function ParticipantDashboard({ onLogout, eventId, photoId, userProfile }: ParticipantDashboardProps) {
   const [view, setView] = useState<AppView>(eventId ? "gallery" : "events");
   const [events, setEvents] = useState<Event[]>([]);
   const [activeEvent, setActiveEvent] = useState<Event | null>(null);
@@ -36,7 +37,7 @@ export default function ParticipantDashboard({ onLogout, eventId }: ParticipantD
 
   useEffect(() => {
     fetchData();
-  }, [eventId]);
+  }, [eventId, photoId]);
 
   const fetchData = async () => {
     try {
@@ -45,10 +46,15 @@ export default function ParticipantDashboard({ onLogout, eventId }: ParticipantD
         setActiveEvent(eventData);
         const photoData = await api.getEventPhotos(eventData.id);
         setPhotos(photoData);
+        if (photoId) {
+          const matchedPhoto = photoData.find((photo) => photo.id === photoId) || null;
+          setSelectedPhoto(matchedPhoto);
+        }
         setView("gallery");
       } else {
-        const eventsData = await api.getEvents();
-        setEvents(eventsData.filter(e => e.isPublic));
+        const eventsData = await api.getEvents({ includePrivate: false });
+        setEvents(eventsData);
+        setSelectedPhoto(null);
       }
     } catch (error) {
       toast.error("Failed to load event data");
@@ -83,6 +89,7 @@ export default function ParticipantDashboard({ onLogout, eventId }: ParticipantD
   const openEvent = async (event: Event) => {
     setActiveEvent(event);
     setView("gallery");
+    setSelectedPhoto(null);
     setSearchState("idle");
     setMatchedIds(new Set());
     setHighlightOnly(false);
@@ -100,10 +107,27 @@ export default function ParticipantDashboard({ onLogout, eventId }: ParticipantD
     reader.onload = (e) => setSelfiePreview(e.target?.result as string);
     reader.readAsDataURL(file);
     setSearchState("searching");
-    setSearchProgress(0);
-    const results = await searchFaceInGallery(file, activeEvent.id, (p) => setSearchProgress(p));
-    setMatchedIds(new Set(results.map((p) => p.id)));
-    setSearchState("done");
+    setSearchProgress(10);
+
+    let progress = 10;
+    const progressTicker = window.setInterval(() => {
+      progress = Math.min(progress + 8, 92);
+      setSearchProgress(progress);
+    }, 250);
+
+    try {
+      const results = await api.matchSelfie(activeEvent.id, file);
+      setMatchedIds(new Set(results.map((p) => p.id)));
+      setSearchProgress(100);
+      setSearchState("done");
+    } catch (error) {
+      toast.error("Could not process selfie. Try a clearer photo with one face.");
+      setSearchState("idle");
+      setSearchProgress(0);
+      setMatchedIds(new Set());
+    } finally {
+      window.clearInterval(progressTicker);
+    }
   }, [activeEvent]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -117,6 +141,46 @@ export default function ParticipantDashboard({ onLogout, eventId }: ParticipantD
     setSelfiePreview(null);
     setHighlightOnly(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const triggerDownload = (url: string, filename: string) => {
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.rel = "noopener";
+    anchor.target = "_blank";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  };
+
+  const handleDownloadPhoto = async (photo: Photo, event?: React.MouseEvent) => {
+    event?.stopPropagation();
+    try {
+      const links = await api.getPhotoLinks(photo.id);
+      triggerDownload(links.downloadUrl, `${photo.eventId}-${photo.id}.jpg`);
+      toast.success("Download started.");
+    } catch (error) {
+      toast.error("Could not download photo.");
+    }
+  };
+
+  const handleSharePhoto = async (photo: Photo) => {
+    try {
+      const links = await api.getPhotoLinks(photo.id);
+      if (navigator.share) {
+        await navigator.share({
+          title: `${photo.event} - Spotlight`,
+          text: "Found this photo in Spotlight",
+          url: links.shareUrl,
+        });
+      } else {
+        await navigator.clipboard.writeText(links.shareUrl);
+        toast.success("Share link copied!");
+      }
+    } catch (error) {
+      toast.error("Could not create share link.");
+    }
   };
 
   const currentPhotos = photos;
@@ -144,7 +208,12 @@ export default function ParticipantDashboard({ onLogout, eventId }: ParticipantD
             transition={{ type: "spring", stiffness: 300, damping: 32 }}
             className="fixed inset-0 z-50 overflow-auto bg-background"
           >
-            <ProfileView onBack={() => setView("events")} onLogout={onLogout} role="participant" />
+            <ProfileView
+              onBack={() => setView("events")}
+              onLogout={onLogout}
+              role="participant"
+              initialProfile={userProfile}
+            />
           </motion.div>
         )}
       </AnimatePresence>
@@ -296,7 +365,7 @@ export default function ParticipantDashboard({ onLogout, eventId }: ParticipantD
                       )}
                       <div className="absolute inset-0 bg-black/0 group-hover:bg-black/25 transition-colors duration-150" />
                       <div className="absolute bottom-2 right-2 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={(e) => e.stopPropagation()} className="w-10 h-10 rounded-full bg-white border-2 border-black flex items-center justify-center hover:bg-gray-100 transition-all shadow-[2px_2px_0px_0px_#000]">
+                        <button onClick={(e) => handleDownloadPhoto(photo, e)} className="w-10 h-10 rounded-full bg-white border-2 border-black flex items-center justify-center hover:bg-gray-100 transition-all shadow-[2px_2px_0px_0px_#000]">
                           <Download size={14} className="text-black" />
                         </button>
                       </div>
@@ -330,11 +399,18 @@ export default function ParticipantDashboard({ onLogout, eventId }: ParticipantD
             <div className="relative">
               <div className="absolute inset-0 bg-primary/20 animate-ping rounded-full" />
               <button
-                onClick={() => { const f = new File([""], "demo.jpg", { type: "image/jpeg" }); startFaceSearch(f); }}
+                onClick={() => fileInputRef.current?.click()}
                 className="relative w-16 h-16 bg-primary border-[3px] border-black shadow-[6px_6px_0px_0px_#000] flex items-center justify-center hover:translate-x-[-2px] hover:translate-y-[-2px] hover:shadow-[8px_8px_0px_0px_#000] transition-all rounded-full"
               >
                 <ScanFace size={28} className="text-white" />
               </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleFileChange}
+              />
             </div>
           </motion.div>
         )}
@@ -404,10 +480,10 @@ export default function ParticipantDashboard({ onLogout, eventId }: ParticipantD
                   <div className="text-[10px] font-bold text-gray-500 uppercase mt-0.5">Found at {selectedPhoto.event}</div>
                 </div>
                 <div className="flex gap-3">
-                  <button className="flex items-center justify-center w-14 h-14 bg-primary text-white border-[3px] border-black shadow-[4px_4px_0px_0px_#000] hover:translate-x-[-1px] hover:translate-y-[-1px] rounded-[20px]">
+                  <button onClick={() => handleDownloadPhoto(selectedPhoto)} className="flex items-center justify-center w-14 h-14 bg-primary text-white border-[3px] border-black shadow-[4px_4px_0px_0px_#000] hover:translate-x-[-1px] hover:translate-y-[-1px] rounded-[20px]">
                     <Download size={24} />
                   </button>
-                  <button className="flex items-center justify-center w-14 h-14 bg-white text-black border-[3px] border-black shadow-[4px_4px_0px_0px_#000] hover:translate-x-[-1px] hover:translate-y-[-1px] rounded-[20px]">
+                  <button onClick={() => handleSharePhoto(selectedPhoto)} className="flex items-center justify-center w-14 h-14 bg-white text-black border-[3px] border-black shadow-[4px_4px_0px_0px_#000] hover:translate-x-[-1px] hover:translate-y-[-1px] rounded-[20px]">
                     <Share2 size={24} />
                   </button>
                 </div>

@@ -1,17 +1,27 @@
-import React, { useState, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Camera, User, Mail, Phone, ArrowLeft, LogOut,
   Check, Pencil, Shield, Bell, Lock,
 } from "lucide-react";
+import { UserProfile } from "@/types";
 
 interface ProfileViewProps {
   onBack: () => void;
   onLogout: () => void;
   role: "admin" | "participant";
+  initialProfile?: UserProfile | null;
 }
 
-const INITIAL = {
+type EditableProfile = {
+  name: string;
+  email: string;
+  phone: string;
+  bio: string;
+  avatar: string | null;
+};
+
+const INITIAL: EditableProfile = {
   name: "Alex Johnson",
   email: "alex@example.com",
   phone: "+1 (555) 012-3456",
@@ -19,12 +29,29 @@ const INITIAL = {
   avatar: null as string | null,
 };
 
-export default function ProfileView({ onBack, onLogout, role }: ProfileViewProps) {
-  const [profile, setProfile] = useState(INITIAL);
-  const [draft, setDraft] = useState(INITIAL);
+function buildInitialProfile(role: "admin" | "participant", profile?: UserProfile | null): EditableProfile {
+  if (!profile) return INITIAL;
+  return {
+    name: profile.name || INITIAL.name,
+    email: profile.email || INITIAL.email,
+    phone: profile.phone || "",
+    bio: profile.bio || (role === "admin" ? "Event organizer" : "Event guest"),
+    avatar: null,
+  };
+}
+
+export default function ProfileView({ onBack, onLogout, role, initialProfile }: ProfileViewProps) {
+  const [profile, setProfile] = useState<EditableProfile>(buildInitialProfile(role, initialProfile));
+  const [draft, setDraft] = useState<EditableProfile>(buildInitialProfile(role, initialProfile));
   const [editing, setEditing] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const seeded = buildInitialProfile(role, initialProfile);
+    setProfile(seeded);
+    setDraft(seeded);
+  }, [initialProfile, role]);
 
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -175,6 +202,19 @@ export default function ProfileView({ onBack, onLogout, role }: ProfileViewProps
         </motion.div>
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
           {field("bio", "Bio", <Pencil size={14} />)}
+        </motion.div>
+        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.17 }}>
+          <div className="border-[3px] border-black bg-white p-5 shadow-[5px_5px_0px_0px_#000] rounded-[24px]">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-12 h-12 border-2 border-black bg-gray-100 flex items-center justify-center text-black shadow-[3px_3px_0px_0px_#000] rounded-full">
+                <Shield size={20} />
+              </div>
+              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Role</span>
+            </div>
+            <div className="text-sm font-black text-black uppercase tracking-tight">
+              {role === "admin" ? "Organizer" : "Participant"}
+            </div>
+          </div>
         </motion.div>
 
         {/* ── Preferences bento row ── */}

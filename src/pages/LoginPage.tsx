@@ -1,16 +1,18 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Camera, Shield, ChevronRight, Zap, User, Mail, Lock, ArrowLeft,
-  ImageIcon, Users, Star, TrendingUp, RefreshCw
+  ImageIcon, Users, Star, TrendingUp, RefreshCw, UserPlus
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { UserProfile } from "@/types";
 import { toast } from "sonner";
 
 interface LoginPageProps {
-  onLogin: (role: "admin" | "participant", eventId?: string) => void;
+  onLogin: (role: "admin" | "participant", eventId?: string, userProfile?: UserProfile) => void;
 }
 type ParticipantStep = "login" | "join";
+type AdminMode = "signin" | "signup";
 
 export default function LoginPage({ onLogin }: LoginPageProps) {
   const [activeTab, setActiveTab] = useState<"admin" | "participant">("participant");
@@ -18,16 +20,47 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [eventCode, setEventCode] = useState("");
+  const [participantProfile, setParticipantProfile] = useState<UserProfile | null>(null);
+  const [adminMode, setAdminMode] = useState<AdminMode>("signin");
+  const [adminName, setAdminName] = useState("");
   const [adminEmail, setAdminEmail] = useState("");
   const [adminPassword, setAdminPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [homeMetrics, setHomeMetrics] = useState({
+    photosIndexed: 0,
+    facesIndexed: 0,
+    publicEvents: 0,
+    matchRate: 0,
+    avgSearchSeconds: 0,
+  });
+
+  useEffect(() => {
+    const loadMetrics = async () => {
+      try {
+        const metrics = await api.getHomeMetrics();
+        setHomeMetrics(metrics);
+      } catch (error) {
+        // Keep graceful fallback values when backend is unavailable.
+      }
+    };
+    loadMetrics();
+  }, []);
+
+  const formatCompact = (value: number) =>
+    new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value);
 
   const handleParticipantStep1 = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    await new Promise((r) => setTimeout(r, 700));
-    setLoading(false);
-    setParticipantStep("join");
+    try {
+      const session = await api.createParticipantSession(name.trim(), email.trim());
+      setParticipantProfile(session.profile);
+      setParticipantStep("join");
+    } catch (error) {
+      toast.error("Could not start participant session. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   };
   const handleParticipantJoin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -36,7 +69,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     try {
       const event = await api.getEvent(eventCode);
       setLoading(false);
-      onLogin("participant", event.id);
+      onLogin("participant", event.id, participantProfile ?? undefined);
     } catch (error) {
       setLoading(false);
       toast.error("Invalid event code. Please try again.");
@@ -45,13 +78,35 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    await new Promise((r) => setTimeout(r, 1000));
-    setLoading(false);
-    onLogin("admin");
+    try {
+      const auth = await api.adminLogin(adminEmail.trim(), adminPassword);
+      onLogin("admin", undefined, auth.profile);
+    } catch (error) {
+      toast.error("Invalid credentials or backend unavailable.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAdminSignup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const auth = await api.adminRegister(adminName.trim(), adminEmail.trim(), adminPassword);
+      toast.success("Account created. You are now signed in.");
+      onLogin("admin", undefined, auth.profile);
+    } catch (error) {
+      toast.error("Signup failed. Email may already be registered.");
+    } finally {
+      setLoading(false);
+    }
   };
   const switchTab = (t: "admin" | "participant") => {
     setActiveTab(t);
     setParticipantStep("login");
+    if (t === "admin") {
+      setAdminMode("signin");
+    }
   };
 
   return (
@@ -111,8 +166,8 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
           {/* Stats row — two bento cards */}
           <div className="grid grid-cols-2 gap-4">
             {[
-              { icon: ImageIcon, value: "1M+", label: "Photos indexed", color: "blue" },
-              { icon: Users, value: "50k+", label: "Happy guests", color: "green" },
+              { icon: ImageIcon, value: formatCompact(homeMetrics.photosIndexed), label: "Photos indexed", color: "blue" },
+              { icon: Users, value: formatCompact(homeMetrics.facesIndexed), label: "Faces indexed", color: "green" },
             ].map(({ icon: Icon, value, label, color }) => (
               <div
                 key={label}
@@ -136,7 +191,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 <Star size={24} />
               </div>
               <div>
-                <div className="text-[10px] font-black text-black uppercase">98% accuracy</div>
+                <div className="text-[10px] font-black text-black uppercase">{homeMetrics.matchRate.toFixed(1)}% accuracy</div>
                 <div className="text-[10px] font-bold text-gray-500 uppercase">Match rate</div>
               </div>
             </div>
@@ -145,7 +200,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 <TrendingUp size={24} />
               </div>
               <div>
-                <div className="text-[10px] font-black text-black uppercase">3s average</div>
+                <div className="text-[10px] font-black text-black uppercase">{homeMetrics.avgSearchSeconds.toFixed(1)}s average</div>
                 <div className="text-[10px] font-bold text-gray-500 uppercase">Search time</div>
               </div>
             </div>
@@ -229,7 +284,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                   </button>
 
                   <div className="text-center text-[10px] font-black uppercase tracking-widest text-gray-400">
-                    <button type="button" onClick={() => onLogin("participant")} className="text-primary hover:underline">Quick Skip to Demo</button>
+                  <button type="button" onClick={() => onLogin("participant", undefined, participantProfile ?? undefined)} className="text-primary hover:underline">Quick Skip to Demo</button>
                   </div>
                 </motion.form>
               )}
@@ -275,7 +330,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                     {loading ? <div className="w-6 h-6 border-4 border-white/30 border-t-white rounded-full animate-spin" /> : <><span>Enter Gallery</span><ChevronRight size={20} /></>}
                   </button>
 
-                  <button type="button" onClick={() => onLogin("participant")}
+                  <button type="button" onClick={() => onLogin("participant", undefined, participantProfile ?? undefined)}
                     className="w-full text-[10px] font-black uppercase text-gray-400 hover:text-black tracking-[0.2em] py-2 transition-colors">
                     Skip Registration
                   </button>
@@ -289,31 +344,68 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: -16 }}
                   transition={{ duration: 0.2 }}
-                  onSubmit={handleAdminLogin}
+                  onSubmit={adminMode === "signin" ? handleAdminLogin : handleAdminSignup}
                   className="p-8 space-y-5"
                 >
                   <div>
                     <div className="text-[10px] text-primary font-black uppercase tracking-[0.2em] mb-2">Organizer Access</div>
-                    <h2 className="text-4xl font-black text-black uppercase italic mb-1">Admin Portal</h2>
-                    <p className="text-xs font-bold text-gray-500 uppercase">Manage your events & collections</p>
+                    <h2 className="text-4xl font-black text-black uppercase italic mb-1">
+                      {adminMode === "signin" ? "Admin Portal" : "Create Account"}
+                    </h2>
+                    <p className="text-xs font-bold text-gray-500 uppercase">
+                      {adminMode === "signin" ? "Manage your events & collections" : "Sign up as an organizer"}
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 border-2 border-black p-1 rounded-[16px]">
+                    <button
+                      type="button"
+                      onClick={() => setAdminMode("signin")}
+                      className={`text-[10px] font-black uppercase tracking-widest py-2 border-2 border-black transition-all rounded-[12px] ${
+                        adminMode === "signin" ? "bg-primary text-white" : "bg-white text-black"
+                      }`}
+                    >
+                      Sign In
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdminMode("signup")}
+                      className={`text-[10px] font-black uppercase tracking-widest py-2 border-2 border-black transition-all rounded-[12px] ${
+                        adminMode === "signup" ? "bg-primary text-white" : "bg-white text-black"
+                      }`}
+                    >
+                      Sign Up
+                    </button>
                   </div>
 
                   <div className="space-y-4">
+                    {adminMode === "signup" && (
+                      <div className="relative">
+                        <UserPlus size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-black" />
+                        <input type="text" value={adminName} onChange={(e) => setAdminName(e.target.value)} placeholder="Full Name" required
+                          className="w-full bg-white border-[3px] border-black px-12 py-4 font-bold focus:shadow-[4px_4px_0px_0px_#2563eb] transition-all" />
+                      </div>
+                    )}
                     <div className="relative">
                       <Mail size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-black" />
-                      <input type="email" value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} placeholder="Email"
+                      <input type="email" value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} placeholder="Email" required
                         className="w-full bg-white border-[3px] border-black px-12 py-4 font-bold focus:shadow-[4px_4px_0px_0px_#2563eb] transition-all" />
                     </div>
                     <div className="relative">
                       <Lock size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-black" />
-                      <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="Password"
+                      <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="Password" required
                         className="w-full bg-white border-[3px] border-black px-12 py-4 font-bold focus:shadow-[4px_4px_0px_0px_#2563eb] transition-all" />
                     </div>
                   </div>
 
                   <button type="submit" disabled={loading}
                     className="w-full bg-primary text-white border-[3px] border-black font-black uppercase tracking-widest py-5 shadow-[6px_6px_0px_0px_#000] hover:shadow-[10px_10px_0px_0px_#000] transition-all flex items-center justify-center gap-3">
-                    {loading ? <div className="w-6 h-6 border-4 border-white/30 border-t-white rounded-full animate-spin" /> : <><span>Sign In</span><ChevronRight size={20} /></>}
+                    {loading ? <div className="w-6 h-6 border-4 border-white/30 border-t-white rounded-full animate-spin" /> : (
+                      <>
+                        <span>{adminMode === "signin" ? "Sign In" : "Sign Up"}</span>
+                        <ChevronRight size={20} />
+                      </>
+                    )}
                   </button>
 
                   <div className="text-center">
