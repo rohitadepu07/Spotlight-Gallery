@@ -1,4 +1,5 @@
 import uuid
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
@@ -17,6 +18,7 @@ from app.services.serializers import photo_to_response
 from app.services.storage import StorageService
 
 router = APIRouter(prefix="/photos", tags=["photos"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/event/{event_id}", response_model=list[PhotoResponse])
@@ -52,8 +54,15 @@ async def upload_event_photos(
         content = await file.read()
         if not content:
             continue
+        if file.content_type and not file.content_type.lower().startswith("image/"):
+            # Ignore non-image files in mixed bulk uploads.
+            continue
 
-        stored = storage_service.upload_event_photo(str(event_id), file, content)
+        try:
+            stored = storage_service.upload_event_photo(str(event_id), file, content)
+        except Exception as exc:
+            logger.warning("Skipping file %s due to storage error: %s", file.filename, exc)
+            continue
         photo = Photo(
             event_id=event_id,
             storage_key=stored.storage_key,
@@ -65,7 +74,12 @@ async def upload_event_photos(
         db.add(photo)
         db.flush()
 
-        faces = face_engine.extract_faces(content)
+        try:
+            faces = face_engine.extract_faces(content)
+        except Exception as exc:
+            # Preserve upload even if face extraction fails for a file format.
+            logger.warning("Face extraction failed for %s: %s", file.filename, exc)
+            faces = []
         detected_faces += len(faces)
         for face in faces:
             embedding_row = FaceEmbedding(

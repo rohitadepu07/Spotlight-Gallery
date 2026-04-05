@@ -1,26 +1,38 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Camera, Shield, ChevronRight, Zap, User, Mail, Lock, ArrowLeft,
-  ImageIcon, Users, Star, TrendingUp, RefreshCw, UserPlus
+  Camera, Shield, ChevronRight, Zap, Mail, Lock,
+  ImageIcon, Users, Star, TrendingUp, UserPlus
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { UserProfile } from "@/types";
 import { toast } from "sonner";
 
 interface LoginPageProps {
   onLogin: (role: "admin" | "participant", eventId?: string, userProfile?: UserProfile) => void;
 }
-type ParticipantStep = "login" | "join";
 type AdminMode = "signin" | "signup";
+type ParticipantMode = "signin" | "signup";
+const STUDENT_AVATAR_KEY_PREFIX = "spotlight_student_avatar:";
+
+const toAvatarKey = (email: string) => `${STUDENT_AVATAR_KEY_PREFIX}${email.trim().toLowerCase()}`;
+
+async function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(new Error("Could not read image file"));
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function LoginPage({ onLogin }: LoginPageProps) {
   const [activeTab, setActiveTab] = useState<"admin" | "participant">("participant");
-  const [participantStep, setParticipantStep] = useState<ParticipantStep>("login");
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [eventCode, setEventCode] = useState("");
-  const [participantProfile, setParticipantProfile] = useState<UserProfile | null>(null);
+  const [participantMode, setParticipantMode] = useState<ParticipantMode>("signin");
+  const [participantName, setParticipantName] = useState("");
+  const [participantEmail, setParticipantEmail] = useState("");
+  const [participantPassword, setParticipantPassword] = useState("");
+  const [participantSelfie, setParticipantSelfie] = useState<File | null>(null);
   const [adminMode, setAdminMode] = useState<AdminMode>("signin");
   const [adminName, setAdminName] = useState("");
   const [adminEmail, setAdminEmail] = useState("");
@@ -48,31 +60,56 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
   const formatCompact = (value: number) =>
     new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value);
+  const participantSignupMissingSelfie = participantMode === "signup" && !participantSelfie;
 
-  const handleParticipantStep1 = async (e: React.FormEvent) => {
+  const handleParticipantAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const session = await api.createParticipantSession(name.trim(), email.trim());
-      setParticipantProfile(session.profile);
-      setParticipantStep("join");
+      if (participantMode === "signin") {
+        const auth = await api.studentLogin(participantEmail.trim(), participantPassword);
+        const savedAvatar = localStorage.getItem(toAvatarKey(auth.profile.email));
+        toast.success("Signed in successfully.");
+        onLogin("participant", undefined, {
+          ...auth.profile,
+          avatarUrl: savedAvatar || auth.profile.avatarUrl,
+        });
+        return;
+      }
+
+      if (!participantSelfie) {
+        toast.error("Please upload a clear selfie to create your account.");
+        return;
+      }
+
+      const selfieDataUrl = await fileToDataUrl(participantSelfie);
+      const auth = await api.studentRegister(
+        participantName.trim(),
+        participantEmail.trim(),
+        participantPassword,
+        participantSelfie
+      );
+      localStorage.setItem(toAvatarKey(auth.profile.email), selfieDataUrl);
+      toast.success("Student account created.");
+      onLogin("participant", undefined, {
+        ...auth.profile,
+        avatarUrl: selfieDataUrl,
+      });
     } catch (error) {
-      toast.error("Could not start participant session. Please try again.");
+      if (
+        (error instanceof ApiError && (error.status === 400 || error.status === 401)) ||
+        (error instanceof Error && /invalid credentials|invalid username or password/i.test(error.message))
+      ) {
+        toast.error("Invalid username or password.");
+      } else if (error instanceof ApiError && error.status === 409) {
+        toast.error("Email already registered. Please sign in instead.");
+      } else if (error instanceof Error && /no face detected/i.test(error.message)) {
+        toast.error("No face detected in selfie. Please upload a clearer image.");
+      } else {
+        toast.error("Unable to continue right now. Please try again.");
+      }
     } finally {
       setLoading(false);
-    }
-  };
-  const handleParticipantJoin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!eventCode) return;
-    setLoading(true);
-    try {
-      const event = await api.getEvent(eventCode);
-      setLoading(false);
-      onLogin("participant", event.id, participantProfile ?? undefined);
-    } catch (error) {
-      setLoading(false);
-      toast.error("Invalid event code. Please try again.");
     }
   };
   const handleAdminLogin = async (e: React.FormEvent) => {
@@ -82,7 +119,14 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       const auth = await api.adminLogin(adminEmail.trim(), adminPassword);
       onLogin("admin", undefined, auth.profile);
     } catch (error) {
-      toast.error("Invalid credentials or backend unavailable.");
+      if (
+        (error instanceof ApiError && (error.status === 400 || error.status === 401)) ||
+        (error instanceof Error && /invalid credentials/i.test(error.message))
+      ) {
+        toast.error("Invalid username or password.");
+      } else {
+        toast.error("Unable to sign in right now. Please try again.");
+      }
     } finally {
       setLoading(false);
     }
@@ -103,7 +147,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   };
   const switchTab = (t: "admin" | "participant") => {
     setActiveTab(t);
-    setParticipantStep("login");
+    setParticipantMode("signin");
     if (t === "admin") {
       setAdminMode("signin");
     }
@@ -249,91 +293,120 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             <div className="border-2 border-black/10 h-full">
             <AnimatePresence mode="wait">
 
-              {activeTab === "participant" && participantStep === "login" && (
+              {activeTab === "participant" && (
                 <motion.form
-                  key="p-login"
+                  key="participant-auth"
                   initial={{ opacity: 0, x: -16 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: 16 }}
                   transition={{ duration: 0.2 }}
-                  onSubmit={handleParticipantStep1}
+                  onSubmit={handleParticipantAuth}
                   className="p-8 space-y-5"
                 >
                   <div>
-                    <div className="text-[10px] text-primary font-black uppercase tracking-[0.2em] mb-2">Step 1 of 2</div>
-                    <h2 className="text-4xl font-black text-black uppercase italic mb-1">Welcome</h2>
-                    <p className="text-xs font-bold text-gray-500 uppercase">Access your event photos here</p>
+                    <div className="text-[10px] text-primary font-black uppercase tracking-[0.2em] mb-2">Student Access</div>
+                    <h2 className="text-4xl font-black text-black uppercase italic mb-1">
+                      {participantMode === "signin" ? "Student Login" : "Create Student Account"}
+                    </h2>
+                    <p className="text-xs font-bold text-gray-500 uppercase">
+                      {participantMode === "signin" ? "View your enrolled event photos" : "Sign up to auto-match your event photos"}
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 border-2 border-black p-1 rounded-[16px]">
+                    <button
+                      type="button"
+                      onClick={() => setParticipantMode("signin")}
+                      className={`text-[10px] font-black uppercase tracking-widest py-2 border-2 border-black transition-all rounded-[12px] ${
+                        participantMode === "signin" ? "bg-primary text-white" : "bg-white text-black"
+                      }`}
+                    >
+                      Sign In
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setParticipantMode("signup")}
+                      className={`text-[10px] font-black uppercase tracking-widest py-2 border-2 border-black transition-all rounded-[12px] ${
+                        participantMode === "signup" ? "bg-primary text-white" : "bg-white text-black"
+                      }`}
+                    >
+                      Sign Up
+                    </button>
                   </div>
 
                   <div className="space-y-4">
-                    <div className="relative group">
-                      <User size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-black" />
-                      <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Full Name" required
-                        className="w-full bg-white border-[3px] border-black px-12 py-4 text-black font-bold placeholder:text-gray-400 focus:outline-none focus:ring-0 focus:shadow-[4px_4px_0px_0px_#2563eb] transition-all rounded-[16px]" />
-                    </div>
-                    <div className="relative group">
+                    {participantMode === "signup" && (
+                      <div className="relative">
+                        <UserPlus size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-black" />
+                        <input
+                          type="text"
+                          value={participantName}
+                          onChange={(e) => setParticipantName(e.target.value)}
+                          placeholder="Full Name"
+                          required
+                          className="w-full bg-white border-[3px] border-black px-12 py-4 font-bold focus:shadow-[4px_4px_0px_0px_#2563eb] transition-all"
+                        />
+                      </div>
+                    )}
+                    <div className="relative">
                       <Mail size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-black" />
-                      <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email Address" required
-                        className="w-full bg-white border-[3px] border-black px-12 py-4 text-black font-bold placeholder:text-gray-400 focus:outline-none focus:ring-0 focus:shadow-[4px_4px_0px_0px_#2563eb] transition-all rounded-[16px]" />
+                      <input
+                        type="email"
+                        value={participantEmail}
+                        onChange={(e) => setParticipantEmail(e.target.value)}
+                        placeholder="Email"
+                        required
+                        className="w-full bg-white border-[3px] border-black px-12 py-4 font-bold focus:shadow-[4px_4px_0px_0px_#2563eb] transition-all"
+                      />
                     </div>
-                  </div>
-
-                  <button type="submit" disabled={loading}
-                    className="w-full bg-primary text-white text-xs font-black uppercase tracking-widest py-5 border-[3px] border-black shadow-[8px_8px_0px_0px_#000] hover:translate-x-[-2px] hover:translate-y-[-2px] hover:shadow-[10px_10px_0px_0px_#000] active:translate-x-[2px] active:translate-y-[2px] active:shadow-[0px_0px_0px_0px_#000] transition-all rounded-[24px] flex items-center justify-center gap-3">
-                    {loading ? <div className="w-6 h-6 border-4 border-white/30 border-t-white rounded-full animate-spin" /> : <><span>Continue</span><ChevronRight size={20} /></>}
-                  </button>
-
-                  <div className="text-center text-[10px] font-black uppercase tracking-widest text-gray-400">
-                  <button type="button" onClick={() => onLogin("participant", undefined, participantProfile ?? undefined)} className="text-primary hover:underline">Quick Skip to Demo</button>
-                  </div>
-                </motion.form>
-              )}
-
-              {activeTab === "participant" && participantStep === "join" && (
-                <motion.form
-                  key="p-join"
-                  initial={{ opacity: 0, x: 16 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -16 }}
-                  transition={{ duration: 0.2 }}
-                  onSubmit={handleParticipantJoin}
-                  className="p-8 space-y-5"
-                >
-                  <div className="flex items-start gap-4">
-                    <button type="button" onClick={() => setParticipantStep("login")}
-                      className="w-10 h-10 border-2 border-black bg-white flex items-center justify-center text-black shadow-[3px_3px_0px_0px_#000] hover:bg-gray-50 transition-all flex-shrink-0">
-                      <ArrowLeft size={18} />
-                    </button>
-                    <div>
-                      <div className="text-[10px] text-primary font-black uppercase tracking-[0.2em] mb-1">Step 2 of 2</div>
-                      <h2 className="text-3xl font-black text-black uppercase italic mb-1">Join Event</h2>
-                      <p className="text-xs font-bold text-gray-500 uppercase tracking-tight">Enter your unique code</p>
+                    <div className="relative">
+                      <Lock size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-black" />
+                      <input
+                        type="password"
+                        value={participantPassword}
+                        onChange={(e) => setParticipantPassword(e.target.value)}
+                        placeholder="Password"
+                        required
+                        className="w-full bg-white border-[3px] border-black px-12 py-4 font-bold focus:shadow-[4px_4px_0px_0px_#2563eb] transition-all"
+                      />
                     </div>
+
+                    {participantMode === "signup" && (
+                      <label className="block w-full bg-white border-[3px] border-black px-5 py-4 font-bold cursor-pointer hover:bg-gray-50 transition-all">
+                        {participantSelfie ? `Selfie: ${participantSelfie.name}` : "Upload Selfie (Required)"}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          required={participantMode === "signup"}
+                          className="hidden"
+                          onChange={(e) => setParticipantSelfie(e.target.files?.[0] ?? null)}
+                        />
+                      </label>
+                    )}
                   </div>
 
-                  {/* Step dots */}
-                  <div className="flex items-center gap-3">
-                    <div className="w-4 h-4 border-2 border-black bg-green-500 shadow-[2px_2px_0px_0px_#000]" />
-                    <div className="flex-1 h-1 bg-black/10" />
-                    <div className="w-5 h-5 border-[3px] border-black bg-primary shadow-[2px_2px_0px_0px_#000]" />
-                  </div>
-
-                  <input type="text" value={eventCode} onChange={(e) => setEventCode(e.target.value.toUpperCase())} placeholder="EVENT-CODE-2025"
-                    className="w-full bg-white border-[3px] border-black px-5 py-5 text-black font-black placeholder:text-gray-300 focus:outline-none focus:shadow-[4px_4px_0px_0px_#2563eb] text-center tracking-[0.2em] transition-all" />
-
-                  <div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest bg-gray-50 border-2 border-black p-4 text-center">
-                    No code? You'll still see recent gallery activity.
-                  </div>
-
-                  <button type="submit" disabled={loading}
-                    className="w-full bg-primary text-white border-[3px] border-black font-black uppercase tracking-widest py-5 shadow-[6px_6px_0px_0px_#000] hover:shadow-[10px_10px_0px_0px_#000] hover:translate-y-[-2px] active:translate-y-[2px] active:shadow-[0px_0px_0px_0px_#000] transition-all flex items-center justify-center gap-3">
-                    {loading ? <div className="w-6 h-6 border-4 border-white/30 border-t-white rounded-full animate-spin" /> : <><span>Enter Gallery</span><ChevronRight size={20} /></>}
+                  <button type="submit" disabled={loading || participantSignupMissingSelfie}
+                    className={`w-full border-[3px] border-black font-black uppercase tracking-widest py-5 shadow-[6px_6px_0px_0px_#000] transition-all flex items-center justify-center gap-3 ${
+                      participantSignupMissingSelfie || loading
+                        ? "bg-gray-300 text-gray-700 cursor-not-allowed"
+                        : "bg-primary text-white hover:shadow-[10px_10px_0px_0px_#000]"
+                    }`}>
+                    {loading ? <div className="w-6 h-6 border-4 border-white/30 border-t-white rounded-full animate-spin" /> : (
+                      <>
+                        <span>{participantMode === "signin" ? "Sign In" : "Create Account"}</span>
+                        <ChevronRight size={20} />
+                      </>
+                    )}
                   </button>
+                  {participantSignupMissingSelfie && (
+                    <p className="text-[10px] font-black text-red-600 uppercase tracking-widest text-center">
+                      Selfie upload is required to register.
+                    </p>
+                  )}
 
-                  <button type="button" onClick={() => onLogin("participant", undefined, participantProfile ?? undefined)}
-                    className="w-full text-[10px] font-black uppercase text-gray-400 hover:text-black tracking-[0.2em] py-2 transition-colors">
-                    Skip Registration
-                  </button>
+                  <div className="text-center">
+                    <button type="button" onClick={() => onLogin("participant")} className="text-[10px] font-black uppercase tracking-widest text-primary hover:underline">Quick Demo Skip</button>
+                  </div>
                 </motion.form>
               )}
 

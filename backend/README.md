@@ -11,6 +11,7 @@ backend/
       v1/
         routes/
           auth.py            # Admin login + participant session endpoints
+          students.py        # Student auth + enrollment + matched-photo endpoints
           events.py          # Event CRUD + visibility toggle
           photos.py          # Bulk photo upload + embedding extraction
           matching.py        # Selfie matching endpoint
@@ -26,6 +27,7 @@ backend/
       event.py               # Events table model
       photo.py               # Photos table model
       face_embedding.py      # FaceEmbeddings table model
+      student.py             # Student users + event enrollments
     schemas/
       event.py               # Event request/response schemas
       photo.py               # Photo upload + match response schemas
@@ -99,5 +101,26 @@ Responses are shaped to match your existing frontend types:
 Additional sync endpoints wired to frontend actions:
 - `POST /api/v1/auth/participant/session`
 - `POST /api/v1/auth/admin/login`
+- `POST /api/v1/students/register`
+- `POST /api/v1/students/login`
+- `POST /api/v1/students/{student_id}/enroll`
+- `GET /api/v1/students/{student_id}/events`
+- `GET /api/v1/students/{student_id}/events/{event_id}/photos`
 - `GET /api/v1/events/{identifier}/join-link`
 - `GET /api/v1/photos/{photo_id}/links`
+
+## Local Image Storage Setup (No S3 Needed)
+
+You can run everything locally without S3/Cloudinary.
+
+1. In `backend/.env`, keep:
+   - `STORAGE_BACKEND=local`
+   - `LOCAL_STORAGE_PATH=./storage`
+   - `PUBLIC_BASE_URL=http://localhost:8000/storage`
+2. Start backend on port `8000`:
+   - `uvicorn app.main:app --reload --port 8000`
+3. Start frontend with `VITE_API_BASE_URL` pointing to backend API:
+   - `http://localhost:8000/api/v1`
+4. Upload photos in organizer upload view. Files are stored under:
+   - `backend/storage/<event_id>/...`
+5. Ensure frontend is opened from the same machine (`localhost`) so image URLs resolve correctly.

@@ -29,6 +29,21 @@ const INITIAL: EditableProfile = {
   avatar: null as string | null,
 };
 
+const STUDENT_AVATAR_KEY_PREFIX = "spotlight_student_avatar:";
+
+const toAvatarKey = (email: string) => `${STUDENT_AVATAR_KEY_PREFIX}${email.trim().toLowerCase()}`;
+
+function resolveProfileAvatar(role: "admin" | "participant", profile: UserProfile): string | null {
+  const profileWithLegacy = profile as UserProfile & { avatar_url?: string | null };
+  const directAvatar = profile.avatarUrl || profileWithLegacy.avatar_url || null;
+  if (directAvatar) return directAvatar;
+  if (role !== "participant") return null;
+  if (!profile.email) return null;
+  console.log("Resolving avatar for participant with email:", profile.email);
+  console.log(window.localStorage.getItem(toAvatarKey(profile.email)));
+  return window.localStorage.getItem(toAvatarKey(profile.email));
+}
+
 function buildInitialProfile(role: "admin" | "participant", profile?: UserProfile | null): EditableProfile {
   if (!profile) return INITIAL;
   return {
@@ -36,7 +51,7 @@ function buildInitialProfile(role: "admin" | "participant", profile?: UserProfil
     email: profile.email || INITIAL.email,
     phone: profile.phone || "",
     bio: profile.bio || (role === "admin" ? "Event organizer" : "Event guest"),
-    avatar: null,
+    avatar: resolveProfileAvatar(role, profile),
   };
 }
 
@@ -61,6 +76,10 @@ export default function ProfileView({ onBack, onLogout, role, initialProfile }: 
       const src = ev.target?.result as string;
       setDraft((d) => ({ ...d, avatar: src }));
       setProfile((p) => ({ ...p, avatar: src }));
+      const emailForAvatar = (initialProfile?.email || draft.email || profile.email || "").trim();
+      if (role === "participant" && emailForAvatar) {
+        window.localStorage.setItem(toAvatarKey(emailForAvatar), src);
+      }
     };
     reader.readAsDataURL(file);
   };

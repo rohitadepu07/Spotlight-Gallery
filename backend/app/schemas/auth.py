@@ -2,10 +2,12 @@ from pydantic import BaseModel, Field
 
 
 class UserProfile(BaseModel):
+    id: str | None = None
     name: str
     email: str
     phone: str | None = None
     bio: str | None = None
+    avatarUrl: str | None = None
     role: str
 
 
@@ -39,3 +41,17 @@ class AdminLoginResponse(BaseModel):
 class AdminRegisterResponse(BaseModel):
     status: str
     profile: UserProfile
+
+
+class StudentLoginRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class StudentAuthResponse(BaseModel):
+    status: str
+    profile: UserProfile
+
+
+class StudentEnrollRequest(BaseModel):
+    code: str = Field(min_length=3, max_length=50)

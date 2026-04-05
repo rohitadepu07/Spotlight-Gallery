@@ -48,10 +48,10 @@ def admin_login(payload: AdminLoginRequest) -> dict:
     email = payload.email.strip().lower()
     password = payload.password.strip()
     if not email or not password:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid credentials")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid username or password")
     user = ADMIN_USERS.get(email)
     if not user or user["password"] != password:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
 
     profile = UserProfile(
         name=user["name"],

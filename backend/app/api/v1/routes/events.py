@@ -51,7 +51,18 @@ def get_event(identifier: str, db: Session = Depends(get_db)) -> dict:
 
 @router.post("/", response_model=EventResponse, status_code=status.HTTP_201_CREATED)
 def create_event(payload: EventCreate, db: Session = Depends(get_db)) -> dict:
-    base_slug = slugify(payload.name)
+    normalized_name = payload.name.strip()
+    if not normalized_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Event name is required")
+
+    existing_event = db.scalar(select(Event).where(func.lower(Event.name) == normalized_name.lower()))
+    if existing_event:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An event with this name already exists",
+        )
+
+    base_slug = slugify(normalized_name)
     slug_candidate = base_slug
     suffix = 1
     while db.scalar(select(func.count()).select_from(Event).where(Event.slug == slug_candidate)):
@@ -64,7 +75,7 @@ def create_event(payload: EventCreate, db: Session = Depends(get_db)) -> dict:
 
     event = Event(
         slug=slug_candidate,
-        name=payload.name,
+        name=normalized_name,
         description=payload.description,
         event_date=payload.event_date if isinstance(payload.event_date, date) else date.today(),
         is_public=payload.is_public,

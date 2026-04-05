@@ -55,3 +55,8 @@ Thumbs.db
 backend/.env
 backend/.env.*
 !backend/.env.example
+
+# Python
+__pycache__/
+*.pyc
+backend/.venv/

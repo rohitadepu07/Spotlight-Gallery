@@ -25,4 +25,8 @@ class Event(Base, TimestampMixin):
 
     photos = relationship("Photo", back_populates="event", cascade="all, delete-orphan")
     embeddings = relationship("FaceEmbedding", back_populates="event", cascade="all, delete-orphan")
-
+    enrollments = relationship(
+        "StudentEnrollment",
+        back_populates="event",
+        cascade="all, delete-orphan",
+    )

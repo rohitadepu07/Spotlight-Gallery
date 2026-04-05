@@ -22,9 +22,11 @@ export interface Event {
 }
 
 export interface UserProfile {
+  id?: string;
   name: string;
   email: string;
   phone?: string;
   bio?: string;
+  avatarUrl?: string;
   role: "admin" | "participant";
 }

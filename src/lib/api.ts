@@ -3,6 +3,18 @@ import { Event, Photo, UserProfile } from "../types";
 const viteEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env ?? {};
 const API_BASE_URL = viteEnv.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "http://localhost:8000/api/v1";
 
+export class ApiError extends Error {
+  status: number;
+  payload?: unknown;
+
+  constructor(status: number, message: string, payload?: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.payload = payload;
+  }
+}
+
 function parseDateToISO(dateLike?: string): string {
   if (!dateLike) return new Date().toISOString().slice(0, 10);
   const parsed = new Date(dateLike);
@@ -25,10 +37,37 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Request failed with status ${response.status}`);
+    const apiError = await parseApiError(response);
+    throw apiError;
   }
   return response.json() as Promise<T>;
+}
+
+async function parseApiError(response: Response): Promise<ApiError> {
+  let message = `Request failed with status ${response.status}`;
+  let payload: unknown;
+
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    try {
+      payload = await response.json();
+      const detail = (payload as { detail?: unknown } | null)?.detail;
+      if (typeof detail === "string" && detail.trim()) {
+        message = detail;
+      } else if (typeof payload === "string" && payload.trim()) {
+        message = payload;
+      }
+    } catch {
+      // Ignore parse errors and keep fallback message.
+    }
+  } else {
+    const text = (await response.text()).trim();
+    if (text) {
+      message = text;
+    }
+  }
+
+  return new ApiError(response.status, message, payload);
 }
 
 export interface UploadPhotosResult {
@@ -56,12 +95,38 @@ export interface AuthResponse {
   profile: UserProfile;
 }
 
+type ProfilePayload = UserProfile & {
+  avatar_url?: string | null;
+};
+
+type AuthResponsePayload = {
+  status: string;
+  profile: ProfilePayload;
+};
+
+export interface StudentEnrollRequest {
+  code: string;
+}
+
 export interface HomeMetrics {
   photosIndexed: number;
   facesIndexed: number;
   publicEvents: number;
   matchRate: number;
   avgSearchSeconds: number;
+}
+
+function normalizeProfile(profile: ProfilePayload): UserProfile {
+  const { avatar_url, avatarUrl, ...rest } = profile;
+  const normalizedAvatar = avatarUrl ?? avatar_url ?? undefined;
+  return { ...rest, avatarUrl: normalizedAvatar };
+}
+
+function normalizeAuthResponse(payload: AuthResponsePayload): AuthResponse {
+  return {
+    status: payload.status,
+    profile: normalizeProfile(payload.profile),
+  };
 }
 
 export const api = {
@@ -77,24 +142,68 @@ export const api = {
     name: string,
     email: string
   ): Promise<{ participantId: string; status: string; profile: UserProfile }> {
-    return request<{ participantId: string; status: string; profile: UserProfile }>("/auth/participant/session", {
+    const payload = await request<{ participantId: string; status: string; profile: ProfilePayload }>("/auth/participant/session", {
       method: "POST",
       body: JSON.stringify({ name, email }),
     });
+    return { ...payload, profile: normalizeProfile(payload.profile) };
   },
 
   async adminLogin(email: string, password: string): Promise<AuthResponse> {
-    return request<AuthResponse>("/auth/admin/login", {
+    const payload = await request<AuthResponsePayload>("/auth/admin/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
+    return normalizeAuthResponse(payload);
   },
 
   async adminRegister(name: string, email: string, password: string): Promise<AuthResponse> {
-    return request<AuthResponse>("/auth/admin/register", {
+    const payload = await request<AuthResponsePayload>("/auth/admin/register", {
       method: "POST",
       body: JSON.stringify({ name, email, password }),
     });
+    return normalizeAuthResponse(payload);
+  },
+
+  async studentLogin(email: string, password: string): Promise<AuthResponse> {
+    const payload = await request<AuthResponsePayload>("/students/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+    return normalizeAuthResponse(payload);
+  },
+
+  async studentRegister(name: string, email: string, password: string, selfie: File): Promise<AuthResponse> {
+    const formData = new FormData();
+    formData.append("name", name);
+    formData.append("email", email);
+    formData.append("password", password);
+    formData.append("selfie", selfie);
+
+    const response = await fetch(`${API_BASE_URL}/students/register`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!response.ok) {
+      throw await parseApiError(response);
+    }
+    const payload = (await response.json()) as AuthResponsePayload;
+    return normalizeAuthResponse(payload);
+  },
+
+  async enrollStudentInEvent(studentId: string, code: string): Promise<Event> {
+    return request<Event>(`/students/${studentId}/enroll`, {
+      method: "POST",
+      body: JSON.stringify({ code } as StudentEnrollRequest),
+    });
+  },
+
+  async getStudentEvents(studentId: string): Promise<Event[]> {
+    return request<Event[]>(`/students/${studentId}/events`);
+  },
+
+  async getStudentMatchedPhotos(studentId: string, eventId: string): Promise<Photo[]> {
+    return request<Photo[]>(`/students/${studentId}/events/${eventId}/photos`);
   },
 
   async getEvents(options?: { includePrivate?: boolean }): Promise<Event[]> {
@@ -145,8 +254,7 @@ export const api = {
       body: formData,
     });
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(text || `Request failed with status ${response.status}`);
+      throw await parseApiError(response);
     }
     return response.json() as Promise<UploadPhotosResult>;
   },
@@ -163,8 +271,7 @@ export const api = {
       body: formData,
     });
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(text || `Request failed with status ${response.status}`);
+      throw await parseApiError(response);
     }
     const payload = (await response.json()) as { photos?: Photo[] };
     return payload.photos ?? [];

@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import ProfileView from "@/components/ProfileView";
 import { type Photo, type Event, type UserProfile } from "@/types";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { toast } from "sonner";
 
 interface ParticipantDashboardProps { 
@@ -18,7 +18,19 @@ interface ParticipantDashboardProps {
 type AppView = "events" | "gallery" | "profile";
 type SearchState = "idle" | "searching" | "done";
 
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiError) {
+    return error.message || fallback;
+  }
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+  return fallback;
+}
+
 export default function ParticipantDashboard({ onLogout, eventId, photoId, userProfile }: ParticipantDashboardProps) {
+  const studentId = userProfile?.id?.trim();
+  const isStudentAuthenticated = Boolean(studentId);
   const [view, setView] = useState<AppView>(eventId ? "gallery" : "events");
   const [events, setEvents] = useState<Event[]>([]);
   const [activeEvent, setActiveEvent] = useState<Event | null>(null);
@@ -39,25 +51,45 @@ export default function ParticipantDashboard({ onLogout, eventId, photoId, userP
     fetchData();
   }, [eventId, photoId]);
 
+  const fetchEventPhotosForCurrentUser = useCallback(
+    async (targetEventId: string): Promise<Photo[]> => {
+      if (isStudentAuthenticated && studentId) {
+        return api.getStudentMatchedPhotos(studentId, targetEventId);
+      }
+      return api.getEventPhotos(targetEventId);
+    },
+    [isStudentAuthenticated, studentId]
+  );
+
   const fetchData = async () => {
     try {
       if (eventId) {
+        if (isStudentAuthenticated && studentId) {
+          // Accessing an event link should auto-enroll the logged-in student.
+          await api.enrollStudentInEvent(studentId, eventId);
+        }
         const eventData = await api.getEvent(eventId);
         setActiveEvent(eventData);
-        const photoData = await api.getEventPhotos(eventData.id);
+        const photoData = await fetchEventPhotosForCurrentUser(eventData.id);
         setPhotos(photoData);
+        if (isStudentAuthenticated) {
+          setSearchState("done");
+          setMatchedIds(new Set(photoData.map((photo) => photo.id)));
+        }
         if (photoId) {
           const matchedPhoto = photoData.find((photo) => photo.id === photoId) || null;
           setSelectedPhoto(matchedPhoto);
         }
         setView("gallery");
       } else {
-        const eventsData = await api.getEvents({ includePrivate: false });
+        const eventsData = isStudentAuthenticated && studentId
+          ? await api.getStudentEvents(studentId)
+          : await api.getEvents({ includePrivate: false });
         setEvents(eventsData);
         setSelectedPhoto(null);
       }
     } catch (error) {
-      toast.error("Failed to load event data");
+      toast.error(getErrorMessage(error, "Failed to load event data"));
     } finally {
       setIsLoading(false);
     }
@@ -68,7 +100,9 @@ export default function ParticipantDashboard({ onLogout, eventId, photoId, userP
     if (!joinCode.trim()) return;
     setIsJoining(true);
     try {
-      const event = await api.getEvent(joinCode);
+      const event = isStudentAuthenticated && studentId
+        ? await api.enrollStudentInEvent(studentId, joinCode)
+        : await api.getEvent(joinCode);
       if (event) {
         setEvents(prev => {
           if (prev.find(e => e.id === event.id)) return prev;
@@ -80,7 +114,7 @@ export default function ParticipantDashboard({ onLogout, eventId, photoId, userP
         openEvent(event);
       }
     } catch (error) {
-      toast.error("Invalid event code");
+      toast.error(getErrorMessage(error, "Invalid event code"));
     } finally {
       setIsJoining(false);
     }
@@ -90,14 +124,17 @@ export default function ParticipantDashboard({ onLogout, eventId, photoId, userP
     setActiveEvent(event);
     setView("gallery");
     setSelectedPhoto(null);
-    setSearchState("idle");
+    setSearchState(isStudentAuthenticated ? "done" : "idle");
     setMatchedIds(new Set());
     setHighlightOnly(false);
     try {
-      const photoData = await api.getEventPhotos(event.id);
+      const photoData = await fetchEventPhotosForCurrentUser(event.id);
       setPhotos(photoData);
+      if (isStudentAuthenticated) {
+        setMatchedIds(new Set(photoData.map((photo) => photo.id)));
+      }
     } catch (error) {
-      toast.error("Failed to load photos");
+      toast.error(getErrorMessage(error, "Failed to load photos"));
     }
   };
 
@@ -121,7 +158,7 @@ export default function ParticipantDashboard({ onLogout, eventId, photoId, userP
       setSearchProgress(100);
       setSearchState("done");
     } catch (error) {
-      toast.error("Could not process selfie. Try a clearer photo with one face.");
+      toast.error(getErrorMessage(error, "Could not process selfie. Try a clearer photo with one face."));
       setSearchState("idle");
       setSearchProgress(0);
       setMatchedIds(new Set());
@@ -161,7 +198,7 @@ export default function ParticipantDashboard({ onLogout, eventId, photoId, userP
       triggerDownload(links.downloadUrl, `${photo.eventId}-${photo.id}.jpg`);
       toast.success("Download started.");
     } catch (error) {
-      toast.error("Could not download photo.");
+      toast.error(getErrorMessage(error, "Could not download photo."));
     }
   };
 
@@ -179,12 +216,16 @@ export default function ParticipantDashboard({ onLogout, eventId, photoId, userP
         toast.success("Share link copied!");
       }
     } catch (error) {
-      toast.error("Could not create share link.");
+      toast.error(getErrorMessage(error, "Could not create share link."));
     }
   };
 
   const currentPhotos = photos;
-  const displayPhotos = highlightOnly ? currentPhotos.filter((p) => matchedIds.has(p.id)) : currentPhotos;
+  const displayPhotos = isStudentAuthenticated
+    ? currentPhotos
+    : highlightOnly
+      ? currentPhotos.filter((p) => matchedIds.has(p.id))
+      : currentPhotos;
 
   const searchStages = [
     { label: "Detecting face", max: 30 },
@@ -232,7 +273,7 @@ export default function ParticipantDashboard({ onLogout, eventId, photoId, userP
           {view === "gallery" && activeEvent ? activeEvent.name : "Spotlight"}
         </span>
         <div className="flex-1" />
-        {view === "gallery" && searchState === "done" && (
+        {view === "gallery" && !isStudentAuthenticated && searchState === "done" && (
           <button onClick={() => setHighlightOnly(!highlightOnly)}
             className={`flex items-center gap-1.5 px-2.5 py-1.5 border-2 border-black font-bold text-xs transition-all rounded-full ${
               highlightOnly ? "bg-primary text-white shadow-[2px_2px_0px_0px_#000]" : "bg-white text-black"
@@ -257,7 +298,9 @@ export default function ParticipantDashboard({ onLogout, eventId, photoId, userP
             <motion.div key="events" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}>
           <div className="mb-6 flex items-end justify-between">
             <div>
-              <div className="text-xs text-primary font-black uppercase tracking-[0.2em] mb-1">Your Events</div>
+              <div className="text-xs text-primary font-black uppercase tracking-[0.2em] mb-1">
+                {isStudentAuthenticated ? "Enrolled Events" : "Your Events"}
+              </div>
               <h1 className="text-4xl font-black text-black uppercase italic -rotate-1 origin-left">Photo Gallery</h1>
             </div>
             <button
@@ -275,7 +318,9 @@ export default function ParticipantDashboard({ onLogout, eventId, photoId, userP
               ) : events.length === 0 ? (
                 <div className="border-[3px] border-black bg-white p-12 text-center rounded-[32px] shadow-[8px_8px_0px_0px_#000]">
                   <ImageIcon size={48} className="mx-auto mb-4 text-gray-300" />
-                  <p className="font-black uppercase italic text-gray-500">No active events found</p>
+                  <p className="font-black uppercase italic text-gray-500">
+                    {isStudentAuthenticated ? "No enrolled events yet. Join one with an event code." : "No active events found"}
+                  </p>
                 </div>
               ) : (
                 <div className="grid grid-cols-2 md:grid-cols-6 gap-6">
@@ -325,11 +370,11 @@ export default function ParticipantDashboard({ onLogout, eventId, photoId, userP
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <div className="text-xs text-muted-foreground font-bold tracking-tight uppercase italic">{activeEvent?.date} · {displayPhotos.length} photos</div>
-                  {searchState === "done" && (
+                  {(isStudentAuthenticated || searchState === "done") && (
                     <div className="text-xs text-primary font-black mt-1 uppercase tracking-wider">{matchedIds.size} photos match you</div>
                   )}
                 </div>
-                {searchState === "done" && (
+                {!isStudentAuthenticated && searchState === "done" && (
                   <button onClick={clearSearch} className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1.5 transition-colors uppercase font-bold">
                     <X size={13} /> Clear search
                   </button>
@@ -339,8 +384,8 @@ export default function ParticipantDashboard({ onLogout, eventId, photoId, userP
               <div className="grid grid-cols-3 md:grid-cols-4 gap-2 auto-rows-[120px] md:auto-rows-[140px]">
                 {displayPhotos.map((photo, i) => {
                   const sizeKey = bentoPattern[i % bentoPattern.length];
-                  const isMatch = matchedIds.has(photo.id);
-                  const isSearchDone = searchState === "done";
+                  const isMatch = isStudentAuthenticated ? true : matchedIds.has(photo.id);
+                  const isSearchDone = isStudentAuthenticated ? true : searchState === "done";
                   const colSpan = sizeKey === "2x1" ? "col-span-2" : "col-span-1";
                   const rowSpan = sizeKey === "1x2" ? "row-span-2" : "row-span-1";
 
@@ -380,7 +425,7 @@ export default function ParticipantDashboard({ onLogout, eventId, photoId, userP
       </main>
 
       <AnimatePresence>
-        {view === "gallery" && searchState === "idle" && (
+        {!isStudentAuthenticated && view === "gallery" && searchState === "idle" && (
           <motion.div
             initial={{ scale: 0, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
@@ -417,7 +462,7 @@ export default function ParticipantDashboard({ onLogout, eventId, photoId, userP
       </AnimatePresence>
 
       <AnimatePresence>
-        {searchState === "searching" && (
+        {!isStudentAuthenticated && searchState === "searching" && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
